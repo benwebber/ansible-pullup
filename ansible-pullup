@@ -5,39 +5,49 @@ require 'ostruct'
 require 'shellwords'
 require 'yaml'
 
-VERSION = '0.1.0'
+VERSION = '0.1.0'.freeze
 DEFAULT_SEARCH_PATH = [
-    File.expand_path('pullup.yml', Dir.pwd),
-    File.expand_path('pullup.yaml', Dir.pwd),
-    File.expand_path('~/.pullup.yml'),
-    File.expand_path('~/.pullup.yaml'),
-]
+  File.expand_path('pullup.yml', Dir.pwd),
+  File.expand_path('pullup.yaml', Dir.pwd),
+  File.expand_path('~/.pullup.yml'),
+  File.expand_path('~/.pullup.yaml')
+].freeze
 
+# Extend Array to add a `split` method, which partitions an array by a given
+# separator.
 class Array
   def split(sep)
-    return self.take_while { |i| i != sep },
-           self.drop_while { |i| i != sep }[1..-1] || []
+    [take_while { |i| i != sep }, drop_while { |i| i != sep }[1..-1] || []]
   end
 end
 
-
 def first_found(files)
-  files.compact.each { |file|
-    return file if File.exists? file
-  }
+  files.compact.each do |file|
+    return file if File.exist? file
+  end
   nil
 end
 
-
 def parse_config(file)
-    begin
-      YAML.load_file file
-    rescue Psych::SyntaxError => e
-      abort "invalid configuration file #{e.to_s}"
-    end
+  YAML.load_file file
+rescue Psych::SyntaxError => e
+  abort "invalid configuration file #{e}"
 end
 
+def extract_hooks(config, config_file)
+  extra_vars = {}
+  %w(pre_apply post_apply).each do |hook|
+    play_var = "pullup_#{hook}_play"
+    play = config[play_var]
+    if play
+      play = File.expand_path(play, File.dirname(config_file))
+      extra_vars[play_var] = play
+    end
+  end
+  extra_vars
+end
 
+# Parses command-line arguments and executes ansible-pull.
 class CLI
   def initialize
     @options = OpenStruct.new
@@ -45,11 +55,12 @@ class CLI
     @remainder = []
   end
 
+  # rubocop:disable Metrics/AbcSize, Metrics/MethodLength
   def parse_args(args)
     @options.verbose = false
 
     parser = OptionParser.new do |opts|
-      opts.program_name = File.basename $0
+      opts.program_name = File.basename $PROGRAM_NAME
       opts.summary_width = 20
       opts.banner = "#{opts.program_name} [OPTIONS] -- [ANSIBLE OPTIONS...]"
       opts.version = VERSION
@@ -63,8 +74,11 @@ Any options specified after `--` will be passed to `ansible-pull`.
 EOT
       opts.separator 'Options:'
 
-      opts.on '-f', '--file [FILE]', 'Pullup configuration file', 'By default, check the following paths in order:', *DEFAULT_SEARCH_PATH do |file|
-        @options.config_file = File.absolute_path(file)
+      opts.on '-f', '--file [FILE]',
+              'Pullup configuration file',
+              'By default, check the following paths in order:',
+              *DEFAULT_SEARCH_PATH do |file|
+        @options.config_file = File.absolute_path file
       end
 
       opts.on_tail '-h', '--help', 'Print this message' do
@@ -78,56 +92,35 @@ EOT
       end
     end
 
-    parser.parse!(args)
+    parser.parse! args
   end
+  # rubocop:enable Metrics/AbcSize, Metrics/MethodLength
 
   def ansible_pull(repo, tags, config, extra_vars, *args)
     command = %w(ansible-pull -i localhost)
-    if repo
-      command.push '-U', repo
-    end
-    unless tags.empty?
-      command.push '-t', tags.join(',')
-    end
+    command.push '-U', repo if repo
+    command.push '-t', tags.join(',') unless tags.empty?
     command.push '-e', "@#{config}"
-    extra_vars.each { |k, v|
-      command.push '-e', "#{k}=#{v}"
-    }
+    extra_vars.each { |k, v| command.push '-e', "#{k}=#{v}" }
     command.push(*args)
     exec command.shelljoin
   end
 
   def run(args)
     @args, @remainder = args.split '--'
-    self.parse_args(@args)
+    parse_args(@args)
 
-    files = DEFAULT_SEARCH_PATH.unshift(@options.config_file)
-    config_file = first_found(files)
-
-    unless config_file then
-      abort 'cannot find configuration file'
-    end
-
-    config = parse_config(config_file)
+    config_file = first_found [@options.config_file] + DEFAULT_SEARCH_PATH
+    abort 'cannot find configuration file' unless config_file
+    config = parse_config config_file
 
     tags = config['pullup_tags'] || []
     repo = config['pullup_repo']
-    extra_vars = {}
-
-    hooks = %w(pre_apply post_apply)
-    hooks.each { |hook|
-      play_var = "pullup_#{hook}_play"
-      play = config[play_var]
-      if play then
-        play = File.expand_path(play, File.dirname(config_file))
-        extra_vars[play_var] = play
-      end
-    }
+    extra_vars = extract_hooks config, config_file
 
     ansible_pull repo, tags, config_file, extra_vars, *@remainder
   end
 end
 
-
-cli = CLI.new()
-cli.run(ARGV)
+cli = CLI.new
+cli.run ARGV
