@@ -25,7 +25,6 @@ def first_found(files)
   files.compact.each do |file|
     return file if File.exist? file
   end
-  nil
 end
 
 def parse_config(file)
